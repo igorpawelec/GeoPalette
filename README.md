@@ -1,6 +1,7 @@
 # geopalette
 
 <img src="https://raw.githubusercontent.com/igorpawelec/GeoPalette/main/www/geopalette_logo.png" align="right" width="200"/>
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 **Color space conversions for geospatial raster data.**
