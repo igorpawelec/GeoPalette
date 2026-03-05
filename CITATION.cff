@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "geopalette — Color space conversions for geospatial raster data"
+version: 0.1.0
+date-released: "2025-01-01"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/igorpawelec/geopalette"
+authors:
+  - family-names: Pawelec
+    given-names: Igor
+    affiliation: "University of Agriculture in Kraków, Poland"
+keywords:
+  - color space
+  - remote sensing
+  - raster
+  - CIELAB
+  - geospatial

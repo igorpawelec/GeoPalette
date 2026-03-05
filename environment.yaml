@@ -1,0 +1,13 @@
+name: geopalette
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  - numpy>=1.21
+  - rasterio>=1.3
+  - matplotlib
+  - pytest
+  - pip
+  - pip:
+    - -e .
