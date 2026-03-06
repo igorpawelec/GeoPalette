@@ -8,16 +8,73 @@ Every forward function has the signature::
     f(R, G, B) → tuple[np.ndarray, ...]
 
 where R, G, B are 2-D uint8 arrays (0-255). Internally they are normalised
-to [0, 1] float32.  The returned arrays are always float32.
+to [0, 1] float32 and linearized (inverse sRGB companding) where required.
 
-The inverse ``lab_to_rgb`` converts CIELAB → linear RGB [0, 1].
+Perceptual spaces (Lab, Luv, Oklab, LCH, xyY, Jzazbz) use sRGB-linearized
+input. Hue-based spaces (HSL, HSV, HSI) and YCbCr work on gamma-encoded
+values directly, as per their definitions.
 """
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# Hue-based spaces
-# ---------------------------------------------------------------------------
+
+# ═══════════════════════════════════════════════════════════════════════
+# sRGB linearization
+# ═══════════════════════════════════════════════════════════════════════
+
+def _srgb_to_linear(c):
+    """Inverse sRGB companding: gamma-encoded [0,1] → linear [0,1]."""
+    c = c.astype(np.float64)
+    return np.where(c <= 0.04045,
+                    c / 12.92,
+                    ((c + 0.055) / 1.055) ** 2.4).astype(np.float32)
+
+
+def _linear_to_srgb(c):
+    """sRGB companding: linear [0,1] → gamma-encoded [0,1]."""
+    c = np.clip(c, 0.0, None).astype(np.float64)
+    return np.where(c <= 0.0031308,
+                    12.92 * c,
+                    1.055 * c ** (1.0 / 2.4) - 0.055).astype(np.float32)
+
+
+def _safe_cbrt(x):
+    """Cube root that handles negative values without RuntimeWarning."""
+    return np.sign(x) * np.abs(x).astype(np.float64) ** (1.0 / 3.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# RGB → XYZ (sRGB D65 standard)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _linear_rgb_to_xyz(R_lin, G_lin, B_lin):
+    """Linear RGB [0,1] → CIE XYZ (D65 illuminant, sRGB primaries)."""
+    X = 0.4124564 * R_lin + 0.3575761 * G_lin + 0.1804375 * B_lin
+    Y = 0.2126729 * R_lin + 0.7151522 * G_lin + 0.0721750 * B_lin
+    Z = 0.0193339 * R_lin + 0.1191920 * G_lin + 0.9503041 * B_lin
+    return X, Y, Z
+
+
+def _rgb_to_linear(R, G, B):
+    """uint8 RGB → linearized float32 RGB."""
+    return (_srgb_to_linear(R.astype(np.float32) / 255.0),
+            _srgb_to_linear(G.astype(np.float32) / 255.0),
+            _srgb_to_linear(B.astype(np.float32) / 255.0))
+
+
+def _rgb_to_xyz(R, G, B):
+    """uint8 sRGB → CIE XYZ (D65). Full pipeline with linearization."""
+    R_lin, G_lin, B_lin = _rgb_to_linear(R, G, B)
+    return _linear_rgb_to_xyz(R_lin, G_lin, B_lin)
+
+
+# D65 white point
+_Xn, _Yn, _Zn = 0.95047, 1.00000, 1.08883
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Hue-based spaces (operate on gamma-encoded values)
+# ═══════════════════════════════════════════════════════════════════════
 
 def rgb_to_hsl(R, G, B):
     """RGB → HSL.  Returns H (0-360°), S (0-1), L (0-1)."""
@@ -43,7 +100,9 @@ def rgb_to_hsl(R, G, B):
 
     S = np.zeros_like(cmax)
     non_zero = delta != 0
-    S[non_zero] = delta[non_zero] / (1.0 - np.abs(2.0 * L[non_zero] - 1.0))
+    denom = 1.0 - np.abs(2.0 * L - 1.0)
+    denom = np.where(denom == 0, 1.0, denom)
+    S[non_zero] = delta[non_zero] / denom[non_zero]
 
     return H.astype(np.float32), S.astype(np.float32), L.astype(np.float32)
 
@@ -103,40 +162,24 @@ def rgb_to_hsi(R, G, B):
     return H.astype(np.float32), S.astype(np.float32), I.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# CIE-based spaces
-# ---------------------------------------------------------------------------
-
-# Shared RGB → XYZ matrix (simplified, no gamma)
-def _rgb_to_xyz_simple(Rn, Gn, Bn):
-    """Linear RGB [0,1] → XYZ using simplified matrix."""
-    X = 0.4887180 * Rn + 0.3106803 * Gn + 0.2006017 * Bn
-    Y = 0.1762044 * Rn + 0.8129847 * Gn + 0.0108109 * Bn
-    Z = 0.0000000 * Rn + 0.0102048 * Gn + 0.9897952 * Bn
-    return X, Y, Z
-
+# ═══════════════════════════════════════════════════════════════════════
+# CIE-based spaces (require linearized RGB → XYZ)
+# ═══════════════════════════════════════════════════════════════════════
 
 def rgb_to_lab(R, G, B):
-    """RGB → CIELAB.  Returns L* (0-100), a*, b*."""
-    Rn = R.astype(np.float32) / 255.0
-    Gn = G.astype(np.float32) / 255.0
-    Bn = B.astype(np.float32) / 255.0
+    """RGB → CIELAB (D65).  Returns L* (0-100), a*, b*."""
+    X, Y, Z = _rgb_to_xyz(R, G, B)
 
-    X, Y, Z = _rgb_to_xyz_simple(Rn, Gn, Bn)
+    epsilon = 0.008856
+    kappa = 903.3
 
-    Xr, Yr, Zr = 1.0, 1.0, 1.0
-    eta = 0.008856
-    kappa = 903.3 / 116.0
-    add = 16.0 / 116.0
-    onethird = 1.0 / 3.0
+    xr = X / _Xn
+    yr = Y / _Yn
+    zr = Z / _Zn
 
-    xr = X / Xr
-    yr = Y / Yr
-    zr = Z / Zr
-
-    fx = np.where(xr > eta, xr ** onethird, kappa * xr + add)
-    fy = np.where(yr > eta, yr ** onethird, kappa * yr + add)
-    fz = np.where(zr > eta, zr ** onethird, kappa * zr + add)
+    fx = np.where(xr > epsilon, _safe_cbrt(xr), (kappa * xr + 16.0) / 116.0)
+    fy = np.where(yr > epsilon, _safe_cbrt(yr), (kappa * yr + 16.0) / 116.0)
+    fz = np.where(zr > epsilon, _safe_cbrt(zr), (kappa * zr + 16.0) / 116.0)
 
     L = 116.0 * fy - 16.0
     a = 500.0 * (fx - fy)
@@ -168,22 +211,20 @@ def rgb_to_dlab(R, G, B):
 
 
 def rgb_to_oklab(R, G, B):
-    """RGB → Oklab.  Returns L, a, b."""
-    Rn = R.astype(np.float32) / 255.0
-    Gn = G.astype(np.float32) / 255.0
-    Bn = B.astype(np.float32) / 255.0
+    """RGB → Oklab.  Returns L, a, b.
 
-    X = 0.4122214708 * Rn + 0.5363325363 * Gn + 0.0514459929 * Bn
-    Y = 0.2119034982 * Rn + 0.6806995451 * Gn + 0.1073969566 * Bn
-    Z = 0.0883024619 * Rn + 0.2817188376 * Gn + 0.6299787005 * Bn
+    Uses proper sRGB linearization before Oklab transform.
+    """
+    R_lin, G_lin, B_lin = _rgb_to_linear(R, G, B)
 
-    l = 0.8189330101 * X + 0.3618667424 * Y - 0.1288597137 * Z
-    m = 0.0329845436 * X + 0.9293118715 * Y + 0.0361456387 * Z
-    s = 0.0482003018 * X + 0.2643662691 * Y + 0.6338517070 * Z
+    # sRGB linear → LMS (Oklab-specific matrix)
+    l = 0.4122214708 * R_lin + 0.5363325363 * G_lin + 0.0514459929 * B_lin
+    m = 0.2119034982 * R_lin + 0.6806995451 * G_lin + 0.1073969566 * B_lin
+    s = 0.0883024619 * R_lin + 0.2817188376 * G_lin + 0.6299787005 * B_lin
 
-    l_c = np.where(l >= 0, l ** (1 / 3), -(-l) ** (1 / 3))
-    m_c = np.where(m >= 0, m ** (1 / 3), -(-m) ** (1 / 3))
-    s_c = np.where(s >= 0, s ** (1 / 3), -(-s) ** (1 / 3))
+    l_c = _safe_cbrt(l)
+    m_c = _safe_cbrt(m)
+    s_c = _safe_cbrt(s)
 
     L = 0.2104542553 * l_c + 0.7936177850 * m_c - 0.0040720468 * s_c
     a = 1.9779984951 * l_c - 2.4285922050 * m_c + 0.4505937099 * s_c
@@ -193,29 +234,24 @@ def rgb_to_oklab(R, G, B):
 
 
 def rgb_to_luv(R, G, B):
-    """RGB → CIELUV.  Returns L*, u*, v*."""
-    Rn = R.astype(np.float32) / 255.0
-    Gn = G.astype(np.float32) / 255.0
-    Bn = B.astype(np.float32) / 255.0
+    """RGB → CIELUV (D65).  Returns L*, u*, v*."""
+    X, Y, Z = _rgb_to_xyz(R, G, B)
 
-    X, Y, Z = _rgb_to_xyz_simple(Rn, Gn, Bn)
-
-    Xr, Yr, Zr = 1.0, 1.0, 1.0
     epsilon = 0.008856
     kappa = 903.3
 
-    yr = Y / Yr
-    L = np.where(yr > epsilon, 116.0 * np.cbrt(yr) - 16.0, kappa * yr)
+    yr = Y / _Yn
+    L = np.where(yr > epsilon, 116.0 * _safe_cbrt(yr) - 16.0, kappa * yr)
 
     denom = X + 15.0 * Y + 3.0 * Z
-    denom_ref = Xr + 15.0 * Yr + 3.0 * Zr
+    denom_ref = _Xn + 15.0 * _Yn + 3.0 * _Zn
     u_prime = np.where(denom != 0,
-                       4.0 * X / denom, 4.0 * Xr / denom_ref)
+                       4.0 * X / denom, 4.0 * _Xn / denom_ref)
     v_prime = np.where(denom != 0,
-                       9.0 * Y / denom, 9.0 * Yr / denom_ref)
+                       9.0 * Y / denom, 9.0 * _Yn / denom_ref)
 
-    u_prime_r = 4.0 * Xr / denom_ref
-    v_prime_r = 9.0 * Yr / denom_ref
+    u_prime_r = 4.0 * _Xn / denom_ref
+    v_prime_r = 9.0 * _Yn / denom_ref
 
     u_val = 13.0 * L * (u_prime - u_prime_r)
     v_val = 13.0 * L * (v_prime - v_prime_r)
@@ -223,9 +259,9 @@ def rgb_to_luv(R, G, B):
     return L.astype(np.float32), u_val.astype(np.float32), v_val.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 # Cylindrical (LCH) spaces
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 
 def rgb_to_lchab(R, G, B):
     """RGB → LCH(ab).  Returns L*, C, H (0-360°)."""
@@ -247,17 +283,13 @@ def rgb_to_lchuv(R, G, B):
     return L.astype(np.float32), C.astype(np.float32), H_deg.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 # Other spaces
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 
 def rgb_to_xyY(R, G, B):
     """RGB → CIE xyY.  Returns x, y (chromaticity), Y (luminance)."""
-    Rn = R.astype(np.float32) / 255.0
-    Gn = G.astype(np.float32) / 255.0
-    Bn = B.astype(np.float32) / 255.0
-
-    X, Y, Z = _rgb_to_xyz_simple(Rn, Gn, Bn)
+    X, Y, Z = _rgb_to_xyz(R, G, B)
 
     sum_xyz = X + Y + Z
     mask = sum_xyz == 0
@@ -270,14 +302,13 @@ def rgb_to_xyY(R, G, B):
 
 def rgb_to_jch(R, G, B):
     """RGB → simplified JCH (CIECAM02-like).  Returns J, C, H (0-360°)."""
+    X, Y, Z = _rgb_to_xyz(R, G, B)
+
+    J = Y * 100.0
+
     Rn = R.astype(np.float32) / 255.0
     Gn = G.astype(np.float32) / 255.0
     Bn = B.astype(np.float32) / 255.0
-
-    X = 0.4124564 * Rn + 0.3575761 * Gn + 0.1804375 * Bn
-    Y = 0.2126729 * Rn + 0.7151522 * Gn + 0.0721750 * Bn
-
-    J = Y * 100.0
 
     maxRGB = np.maximum(np.maximum(Rn, Gn), Bn)
     minRGB = np.minimum(np.minimum(Rn, Gn), Bn)
@@ -301,85 +332,113 @@ def rgb_to_jch(R, G, B):
 
 def rgb_to_ycbcr(R, G, B):
     """RGB → YCbCr (BT.601 full-range).  Returns Y (16-235), Cb, Cr (16-240)."""
-    Rn = R.astype(np.float32) / 255.0
-    Gn = G.astype(np.float32) / 255.0
-    Bn = B.astype(np.float32) / 255.0
+    Rf = R.astype(np.float32)
+    Gf = G.astype(np.float32)
+    Bf = B.astype(np.float32)
 
-    r_val = Rn * 255.0
-    g_val = Gn * 255.0
-    b_val = Bn * 255.0
-
-    Y = 16.0 + (65.481 * r_val + 128.553 * g_val + 24.966 * b_val) / 255.0
-    Cb = 128.0 + (-37.797 * r_val - 74.203 * g_val + 112.0 * b_val) / 255.0
-    Cr = 128.0 + (112.0 * r_val - 93.786 * g_val - 18.214 * b_val) / 255.0
+    Y = 16.0 + (65.481 * Rf + 128.553 * Gf + 24.966 * Bf) / 255.0
+    Cb = 128.0 + (-37.797 * Rf - 74.203 * Gf + 112.0 * Bf) / 255.0
+    Cr = 128.0 + (112.0 * Rf - 93.786 * Gf - 18.214 * Bf) / 255.0
 
     return Y.astype(np.float32), Cb.astype(np.float32), Cr.astype(np.float32)
 
 
-def rgb_to_jzczhz(Jz, az, bz):
-    """Jzazbz → JzCzHz (cylindrical).  Returns Jz, Cz, hz (0-360°)."""
+# ═══════════════════════════════════════════════════════════════════════
+# Jzazbz / JzCzHz (Perceptual Quantizer based, HDR-ready)
+# ═══════════════════════════════════════════════════════════════════════
+
+def rgb_to_jzazbz(R, G, B):
+    """RGB → Jzazbz.  Returns Jz, az, bz.
+
+    Based on Safdar et al. (2017) "Perceptually uniform color space
+    for image signals including high dynamic range and wide gamut".
+    """
+    X, Y, Z = _rgb_to_xyz(R, G, B)
+    X = X.astype(np.float64)
+    Y = Y.astype(np.float64)
+    Z = Z.astype(np.float64)
+
+    # Absolute luminance (assume SDR peak ~203 cd/m²)
+    X_abs = X * 203.0
+    Y_abs = Y * 203.0
+    Z_abs = Z * 203.0
+
+    # XYZ → LMS (modified Hunt-Pointer-Estevez)
+    Lp = 0.41478972 * X_abs + 0.579999 * Y_abs + 0.01464800 * Z_abs
+    Mp = -0.20151000 * X_abs + 1.120649 * Y_abs + 0.05310080 * Z_abs
+    Sp = -0.01660080 * X_abs + 0.264800 * Y_abs + 0.66847990 * Z_abs
+
+    # PQ transfer function (Perceptual Quantizer)
+    c1 = 3424.0 / 4096.0
+    c2 = 2413.0 / 128.0
+    c3 = 2392.0 / 128.0
+    n = 2610.0 / 16384.0
+    p = 1.7 * 2523.0 / 32.0
+
+    def _pq(x):
+        x = np.clip(x / 10000.0, 0.0, None)
+        xn = x ** n
+        return ((c1 + c2 * xn) / (1.0 + c3 * xn)) ** p
+
+    Lp_pq = _pq(np.abs(Lp))
+    Mp_pq = _pq(np.abs(Mp))
+    Sp_pq = _pq(np.abs(Sp))
+
+    # Izazbz
+    Iz = 0.5 * Lp_pq + 0.5 * Mp_pq
+    az = 3.524000 * Lp_pq - 4.066708 * Mp_pq + 0.542708 * Sp_pq
+    bz = 0.199076 * Lp_pq + 1.096799 * Mp_pq - 1.295875 * Sp_pq
+
+    # Jz
+    d0 = 1.6295499532821566e-11
+    Jz = (1.0 + d0) * Iz / (1.0 + d0 * Iz) - d0
+
+    return Jz.astype(np.float32), az.astype(np.float32), bz.astype(np.float32)
+
+
+def rgb_to_jzczhz(R, G, B):
+    """RGB → JzCzHz (cylindrical Jzazbz).  Returns Jz, Cz, hz (0-360°)."""
+    Jz, az, bz = rgb_to_jzazbz(R, G, B)
     Cz = np.sqrt(az ** 2 + bz ** 2)
-    max_chroma = np.nanmax(Cz)
-    Cz = np.clip(Cz, 0, max_chroma)
-
-    hz_rad = np.arctan2(bz, az)
-    hz_deg = np.degrees(hz_rad)
-    hz_deg = np.where(hz_deg < 0, hz_deg + 360.0, hz_deg)
-    hz_deg = np.mod(hz_deg, 360.0)
-
-    return Jz.astype(np.float32), Cz.astype(np.float32), hz_deg.astype(np.float32)
+    hz = np.degrees(np.arctan2(bz, az))
+    hz = np.where(hz < 0, hz + 360.0, hz)
+    return Jz.astype(np.float32), Cz.astype(np.float32), hz.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 # Inverse conversions
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 
 def lab_to_rgb(L, a, b):
-    """CIELAB → linear RGB [0, 1].  Returns R, G, B as float32.
-
-    Uses the inverse of the simplified matrix used in ``rgb_to_lab``.
-    Applies sRGB companding (gamma ≈ 2.4).
-    """
+    """CIELAB → sRGB [0, 1].  Returns R, G, B as float32."""
     epsilon = 0.008856
     kappa = 903.3
-    Xr, Yr, Zr = 1.0, 1.0, 1.0
 
     fy = (L + 16.0) / 116.0
     fx = a / 500.0 + fy
     fz = fy - b / 200.0
 
     X = np.where(fx ** 3 > epsilon, fx ** 3,
-                 (116.0 * fx - 16.0) / kappa)
-    Y = np.where(L > kappa * epsilon, fy ** 3, L / kappa)
+                 (116.0 * fx - 16.0) / kappa) * _Xn
+    Y = np.where(L > kappa * epsilon, fy ** 3, L / kappa) * _Yn
     Z = np.where(fz ** 3 > epsilon, fz ** 3,
-                 (116.0 * fz - 16.0) / kappa)
+                 (116.0 * fz - 16.0) / kappa) * _Zn
 
-    X *= Xr
-    Y *= Yr
-    Z *= Zr
+    # XYZ → linear sRGB (inverse of D65 matrix)
+    r_lin =  3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z
+    g_lin = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z
+    b_lin =  0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z
 
-    # Inverse of simplified matrix
-    r_lin = 2.373 * X - 0.903 * Y - 0.471 * Z
-    g_lin = -0.515 * X + 1.428 * Y + 0.0888 * Z
-    b_lin = 0.00531 * X - 0.01475 * Y + 1.0122 * Z
-
-    # sRGB companding
-    R_out = np.where(r_lin <= 0.00313081,
-                     12.92 * r_lin,
-                     1.055 * np.power(np.clip(r_lin, 0, None), 1.0 / 2.4) - 0.055)
-    G_out = np.where(g_lin <= 0.00313081,
-                     12.92 * g_lin,
-                     1.055 * np.power(np.clip(g_lin, 0, None), 1.0 / 2.4) - 0.055)
-    B_out = np.where(b_lin <= 0.00313081,
-                     12.92 * b_lin,
-                     1.055 * np.power(np.clip(b_lin, 0, None), 1.0 / 2.4) - 0.055)
+    R_out = _linear_to_srgb(r_lin)
+    G_out = _linear_to_srgb(g_lin)
+    B_out = _linear_to_srgb(b_lin)
 
     return R_out.astype(np.float32), G_out.astype(np.float32), B_out.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 # Registry & dispatcher
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════
 
 _CONVERSIONS = {
     "dlab":   (rgb_to_dlab,   ["L", "a", "b", "L99", "a99", "b99"]),
@@ -387,6 +446,7 @@ _CONVERSIONS = {
     "hsi":    (rgb_to_hsi,    ["H", "S", "I"]),
     "hsv":    (rgb_to_hsv,    ["H", "S", "V"]),
     "jch":    (rgb_to_jch,    ["J", "C", "H"]),
+    "jzazbz": (rgb_to_jzazbz, ["Jz", "az", "bz"]),
     "jzczhz": (rgb_to_jzczhz, ["Jz", "Cz", "hz"]),
     "lab":    (rgb_to_lab,    ["L", "a", "b"]),
     "lchab":  (rgb_to_lchab,  ["L", "C", "Hab"]),
