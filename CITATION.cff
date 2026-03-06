@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "geopalette — Color space conversions for geospatial raster data"
-version: 0.1.0
-date-released: "2025-01-01"
+version: "0.2.0"
+date-released: "2026-03-06"
 license: GPL-3.0-or-later
 repository-code: "https://github.com/igorpawelec/geopalette"
 authors:
