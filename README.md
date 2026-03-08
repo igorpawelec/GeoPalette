@@ -39,7 +39,7 @@ Key references for the implemented color spaces:
 | **Jzazbz** | Jz, az, bz | HDR perceptual |
 | **JzCzHz** | Jz, Cz, hz (0–360°) | HDR cylindrical |
 
-Inverse conversion: **CIELAB → RGB** (with sRGB companding).
+Inverse conversions: **CIELAB → RGB**, **Oklab → RGB**, **HSV → RGB**, **HSL → RGB**.
 
 ## Installation
 
@@ -115,10 +115,15 @@ python -m geopalette -i ortho_rgb.tif -o results/ -s lab
 ### Individual functions
 
 ```python
-from geopalette import rgb_to_lab, rgb_to_oklab, rgb_to_jzazbz, lab_to_rgb
+from geopalette import rgb_to_lab, rgb_to_oklab, rgb_to_jzazbz
+from geopalette import lab_to_rgb, oklab_to_rgb, hsv_to_rgb, hsl_to_rgb
 
 L, a, b = rgb_to_lab(R, G, B)
-R2, G2, B2 = lab_to_rgb(L, a, b)  # inverse
+R2, G2, B2 = lab_to_rgb(L, a, b)  # inverse (sRGB [0,1])
+
+from geopalette import rgb_to_hsv
+H, S, V = rgb_to_hsv(R, G, B)
+R2, G2, B2 = hsv_to_rgb(H, S, V)  # inverse (sRGB [0,1])
 ```
 
 ## Repository structure
@@ -137,10 +142,18 @@ geopalette/
 ├── pyproject.toml
 ├── requirements.txt
 ├── environment.yaml
+├── tests/                # Pytest suite
 ├── CITATION.cff
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 └── LICENSE
+```
+
+## Testing
+
+```bash
+pip install pytest
+pytest tests/ -v
 ```
 
 ## Requirements

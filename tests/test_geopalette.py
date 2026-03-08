@@ -1,0 +1,172 @@
+"""
+pytest suite for GeoPalette.
+Run: pytest tests/test_geopalette.py -v
+"""
+
+import numpy as np
+import pytest
+
+
+@pytest.fixture
+def rgb_random():
+    np.random.seed(42)
+    R = np.random.randint(0, 256, (50, 50), dtype=np.uint8)
+    G = np.random.randint(0, 256, (50, 50), dtype=np.uint8)
+    B = np.random.randint(0, 256, (50, 50), dtype=np.uint8)
+    return R, G, B
+
+
+@pytest.fixture
+def rgb_red():
+    R = np.array([[255]], dtype=np.uint8)
+    G = np.array([[0]], dtype=np.uint8)
+    B = np.array([[0]], dtype=np.uint8)
+    return R, G, B
+
+
+@pytest.fixture
+def rgb_white():
+    v = np.array([[255]], dtype=np.uint8)
+    return v, v.copy(), v.copy()
+
+
+@pytest.fixture
+def rgb_black():
+    v = np.array([[0]], dtype=np.uint8)
+    return v, v.copy(), v.copy()
+
+
+class TestForwardConversions:
+
+    def test_all_spaces_run(self, rgb_random):
+        from geopalette import convertbands, available_spaces
+        R, G, B = rgb_random
+        for space in available_spaces():
+            comps, names = convertbands(R, G, B, space)
+            assert len(comps) == len(names)
+            for c in comps:
+                assert c.shape == (50, 50)
+                assert c.dtype == np.float32
+
+    def test_lab_reference_red(self, rgb_red):
+        from geopalette import rgb_to_lab
+        L, a, b = rgb_to_lab(*rgb_red)
+        assert abs(L[0, 0] - 53.23) < 1.0
+        assert abs(a[0, 0] - 80.11) < 1.0
+        assert abs(b[0, 0] - 67.22) < 1.0
+
+    def test_lab_white(self, rgb_white):
+        from geopalette import rgb_to_lab
+        L, a, b = rgb_to_lab(*rgb_white)
+        assert abs(L[0, 0] - 100.0) < 1.0
+        assert abs(a[0, 0]) < 1.0
+        assert abs(b[0, 0]) < 1.0
+
+    def test_lab_black(self, rgb_black):
+        from geopalette import rgb_to_lab
+        L, a, b = rgb_to_lab(*rgb_black)
+        assert abs(L[0, 0]) < 1.0
+
+    def test_oklab_reference_red(self, rgb_red):
+        from geopalette import rgb_to_oklab
+        L, a, b = rgb_to_oklab(*rgb_red)
+        assert abs(L[0, 0] - 0.6279) < 0.01
+        assert abs(a[0, 0] - 0.2249) < 0.01
+
+    def test_hsv_red(self, rgb_red):
+        from geopalette import rgb_to_hsv
+        H, S, V = rgb_to_hsv(*rgb_red)
+        assert abs(H[0, 0]) < 1.0  # H=0
+        assert abs(S[0, 0] - 1.0) < 0.01
+        assert abs(V[0, 0] - 1.0) < 0.01
+
+    def test_ycbcr_reference(self, rgb_red):
+        from geopalette import rgb_to_ycbcr
+        Y, Cb, Cr = rgb_to_ycbcr(*rgb_red)
+        assert abs(Y[0, 0] - 81.48) < 0.5
+        assert abs(Cr[0, 0] - 240.0) < 0.5
+
+    def test_jzazbz_runs(self, rgb_red):
+        from geopalette import rgb_to_jzazbz
+        Jz, az, bz = rgb_to_jzazbz(*rgb_red)
+        assert Jz[0, 0] > 0
+        assert Jz.dtype == np.float32
+
+    def test_invalid_space(self, rgb_random):
+        from geopalette import convertbands
+        with pytest.raises(ValueError, match="Unknown space"):
+            convertbands(*rgb_random, "nonexistent")
+
+
+class TestInverseConversions:
+
+    def test_lab_roundtrip(self, rgb_random):
+        from geopalette import rgb_to_lab, lab_to_rgb
+        R, G, B = rgb_random
+        L, a, b = rgb_to_lab(R, G, B)
+        R2, G2, B2 = lab_to_rgb(L, a, b)
+        # Roundtrip: correlation > 0.99
+        corr = np.corrcoef(R2.ravel(), (R / 255.0).ravel())[0, 1]
+        assert corr > 0.99
+
+    def test_oklab_roundtrip(self, rgb_random):
+        from geopalette import rgb_to_oklab, oklab_to_rgb
+        R, G, B = rgb_random
+        L, a, b = rgb_to_oklab(R, G, B)
+        R2, G2, B2 = oklab_to_rgb(L, a, b)
+        corr = np.corrcoef(np.clip(R2, 0, 1).ravel(), (R / 255.0).ravel())[0, 1]
+        assert corr > 0.99
+
+    def test_hsv_roundtrip(self, rgb_random):
+        from geopalette import rgb_to_hsv, hsv_to_rgb
+        R, G, B = rgb_random
+        H, S, V = rgb_to_hsv(R, G, B)
+        R2, G2, B2 = hsv_to_rgb(H, S, V)
+        # HSV roundtrip should be near-perfect
+        np.testing.assert_allclose(R2, R / 255.0, atol=0.01)
+        np.testing.assert_allclose(G2, G / 255.0, atol=0.01)
+        np.testing.assert_allclose(B2, B / 255.0, atol=0.01)
+
+    def test_hsl_roundtrip(self, rgb_random):
+        from geopalette import rgb_to_hsl, hsl_to_rgb
+        R, G, B = rgb_random
+        H, S, L = rgb_to_hsl(R, G, B)
+        R2, G2, B2 = hsl_to_rgb(H, S, L)
+        np.testing.assert_allclose(R2, R / 255.0, atol=0.01)
+        np.testing.assert_allclose(G2, G / 255.0, atol=0.01)
+        np.testing.assert_allclose(B2, B / 255.0, atol=0.01)
+
+    def test_lab_red_roundtrip(self, rgb_red):
+        from geopalette import rgb_to_lab, lab_to_rgb
+        L, a, b = rgb_to_lab(*rgb_red)
+        R2, G2, B2 = lab_to_rgb(L, a, b)
+        assert abs(R2[0, 0] * 255 - 255) < 2.0
+        assert abs(G2[0, 0] * 255) < 2.0
+        assert abs(B2[0, 0] * 255) < 2.0
+
+
+class TestAvailableSpaces:
+
+    def test_count(self):
+        from geopalette import available_spaces
+        spaces = available_spaces()
+        assert len(spaces) >= 14
+
+    def test_jzazbz_included(self):
+        from geopalette import available_spaces
+        assert "jzazbz" in available_spaces()
+        assert "jzczhz" in available_spaces()
+
+
+class TestImports:
+
+    def test_import(self):
+        import geopalette
+        assert hasattr(geopalette, '__version__')
+
+    def test_import_inverses(self):
+        from geopalette import lab_to_rgb, oklab_to_rgb, hsv_to_rgb, hsl_to_rgb
+        assert callable(lab_to_rgb)
+        assert callable(oklab_to_rgb)
+        assert callable(hsv_to_rgb)
+        assert callable(hsl_to_rgb)

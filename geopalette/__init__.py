@@ -21,6 +21,9 @@ from .conversions import (          # noqa: F401
     rgb_to_jzazbz,
     rgb_to_jzczhz,
     lab_to_rgb,
+    oklab_to_rgb,
+    hsv_to_rgb,
+    hsl_to_rgb,
     available_spaces,
     convertbands,
 )

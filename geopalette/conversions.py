@@ -436,6 +436,79 @@ def lab_to_rgb(L, a, b):
     return R_out.astype(np.float32), G_out.astype(np.float32), B_out.astype(np.float32)
 
 
+def oklab_to_rgb(L, a, b):
+    """Oklab → sRGB [0, 1].  Returns R, G, B as float32."""
+    l_c = L + 0.3963377774 * a + 0.2158037573 * b
+    m_c = L - 0.1055613458 * a - 0.0638541728 * b
+    s_c = L - 0.0894841775 * a - 1.2914855480 * b
+
+    l = l_c ** 3
+    m = m_c ** 3
+    s = s_c ** 3
+
+    R_lin = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    G_lin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    B_lin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+
+    return (_linear_to_srgb(R_lin).astype(np.float32),
+            _linear_to_srgb(G_lin).astype(np.float32),
+            _linear_to_srgb(B_lin).astype(np.float32))
+
+
+def hsv_to_rgb(H, S, V):
+    """HSV → RGB [0, 1].  H in [0, 360], S and V in [0, 1].  Returns R, G, B float32."""
+    H = H.astype(np.float32)
+    S = S.astype(np.float32)
+    V = V.astype(np.float32)
+
+    C = V * S
+    Hp = H / 60.0
+    X = C * (1.0 - np.abs(np.mod(Hp, 2.0) - 1.0))
+    m = V - C
+
+    R = np.zeros_like(H)
+    G = np.zeros_like(H)
+    B = np.zeros_like(H)
+
+    mask0 = (Hp >= 0) & (Hp < 1); R[mask0] = C[mask0]; G[mask0] = X[mask0]
+    mask1 = (Hp >= 1) & (Hp < 2); R[mask1] = X[mask1]; G[mask1] = C[mask1]
+    mask2 = (Hp >= 2) & (Hp < 3); G[mask2] = C[mask2]; B[mask2] = X[mask2]
+    mask3 = (Hp >= 3) & (Hp < 4); G[mask3] = X[mask3]; B[mask3] = C[mask3]
+    mask4 = (Hp >= 4) & (Hp < 5); R[mask4] = X[mask4]; B[mask4] = C[mask4]
+    mask5 = (Hp >= 5) & (Hp < 6); R[mask5] = C[mask5]; B[mask5] = X[mask5]
+
+    return ((R + m).astype(np.float32),
+            (G + m).astype(np.float32),
+            (B + m).astype(np.float32))
+
+
+def hsl_to_rgb(H, S, L):
+    """HSL → RGB [0, 1].  H in [0, 360], S and L in [0, 1].  Returns R, G, B float32."""
+    H = H.astype(np.float32)
+    S = S.astype(np.float32)
+    L = L.astype(np.float32)
+
+    C = (1.0 - np.abs(2.0 * L - 1.0)) * S
+    Hp = H / 60.0
+    X = C * (1.0 - np.abs(np.mod(Hp, 2.0) - 1.0))
+    m = L - C / 2.0
+
+    R = np.zeros_like(H)
+    G = np.zeros_like(H)
+    B = np.zeros_like(H)
+
+    mask0 = (Hp >= 0) & (Hp < 1); R[mask0] = C[mask0]; G[mask0] = X[mask0]
+    mask1 = (Hp >= 1) & (Hp < 2); R[mask1] = X[mask1]; G[mask1] = C[mask1]
+    mask2 = (Hp >= 2) & (Hp < 3); G[mask2] = C[mask2]; B[mask2] = X[mask2]
+    mask3 = (Hp >= 3) & (Hp < 4); G[mask3] = X[mask3]; B[mask3] = C[mask3]
+    mask4 = (Hp >= 4) & (Hp < 5); R[mask4] = X[mask4]; B[mask4] = C[mask4]
+    mask5 = (Hp >= 5) & (Hp < 6); R[mask5] = C[mask5]; B[mask5] = X[mask5]
+
+    return ((R + m).astype(np.float32),
+            (G + m).astype(np.float32),
+            (B + m).astype(np.float32))
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Registry & dispatcher
 # ═══════════════════════════════════════════════════════════════════════
