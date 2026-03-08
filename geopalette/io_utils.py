@@ -37,6 +37,7 @@ def convert_raster(
     save_singlebands: bool = False,
     nodata: float = -9999.0,
     block_size: int = 512,
+    quiet: bool = False,
 ) -> Path:
     """Read an RGB GeoTIFF, convert to *space*, and write the result.
 
@@ -56,6 +57,8 @@ def convert_raster(
         NoData value for output rasters.
     block_size : int
         Tile size for block-based processing of large rasters.
+    quiet : bool
+        Suppress progress messages.
 
     Returns
     -------
@@ -63,19 +66,29 @@ def convert_raster(
         Path to the multi-band output (or output dir if only single bands).
     """
     _check_rasterio()
+    import time
 
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     base = input_path.stem
 
+    if not quiet:
+        print(f"GeoPalette: {input_path.name} → {space}")
+
     with rasterio.open(input_path) as src:
         R = src.read(1)
         G = src.read(2)
         B = src.read(3)
         meta = src.meta.copy()
+        if not quiet:
+            print(f"  Input: {src.height}×{src.width}, {src.count} bands, {src.dtypes[0]}")
 
+    t0 = time.time()
     comps, names = convertbands(R, G, B, space)
+    dt = time.time() - t0
+    if not quiet:
+        print(f"  Converted: {len(comps)} bands ({names}) in {dt:.3f}s")
 
     # Multi-band output
     multi_path = output_dir / f"{base}_{space}.tif"
@@ -84,6 +97,8 @@ def convert_raster(
         meta_out.update(count=len(comps), dtype="float32", nodata=nodata)
         with rasterio.open(multi_path, "w", **meta_out) as dst:
             dst.write(np.stack(comps).astype(np.float32))
+        if not quiet:
+            print(f"  Written: {multi_path.name}")
 
     # Single-band outputs
     if save_singlebands:
@@ -93,5 +108,7 @@ def convert_raster(
             path = output_dir / f"{base}_{name}.tif"
             with rasterio.open(path, "w", **meta_s) as dst:
                 dst.write(comp.astype(np.float32), 1)
+        if not quiet:
+            print(f"  Written: {len(names)} single-band files")
 
     return multi_path
