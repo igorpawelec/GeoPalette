@@ -170,3 +170,10 @@ class TestImports:
         assert callable(oklab_to_rgb)
         assert callable(hsv_to_rgb)
         assert callable(hsl_to_rgb)
+
+    def test_convert_raster_quiet_param(self):
+        """convert_raster accepts quiet parameter."""
+        from geopalette.io_utils import convert_raster
+        import inspect
+        sig = inspect.signature(convert_raster)
+        assert 'quiet' in sig.parameters

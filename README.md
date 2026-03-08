@@ -97,6 +97,7 @@ convert_raster(
     save_multiband=True,
     save_singlebands=True,
 )
+# Use quiet=True to suppress progress messages
 ```
 
 ### Command line
