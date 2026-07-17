@@ -42,16 +42,26 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
-    out = convert_raster(
-        args.input,
-        args.outdir,
-        args.space,
-        save_multiband=not args.no_multiband,
-        save_singlebands=args.single_bands,
-        nodata=args.nodata,
-    )
+    try:
+        out = convert_raster(
+            args.input,
+            args.outdir,
+            args.space,
+            save_multiband=not args.no_multiband,
+            save_singlebands=args.single_bands,
+            nodata=args.nodata,
+        )
+    except (OSError, ValueError) as e:
+        # a missing raster or a bad space is a user mistake, not a crash;
+        # a traceback helps nobody here
+        print(f"geopalette: error: {e}", file=sys.stderr)
+        return 1
+
     print(f"Done → {out}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    # main()'s return value is the exit code. Without sys.exit() a failure
+    # still reports success, and any script or CI step checking $? misses it.
+    sys.exit(main())

@@ -192,3 +192,37 @@ GNU General Public License v3.0 — see [LICENSE](LICENSE).
 ## Contributing
 
 Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Accuracy
+
+Every conversion is checked against an independent implementation
+(`colour-science`, `scikit-image`) in `tests/test_reference.py`:
+
+```bash
+pip install -e ".[validate]"
+pytest tests/test_reference.py -v
+```
+
+All 14 spaces match their reference to float32 precision. Where a tolerance
+looks loose it is the module's own float32 storage: the PQ curve inside
+Jzazbz carries an exponent of 134, which turns a float32 input error of
+~1e-7 into ~1e-5 on the output.
+
+Two spaces need a note:
+
+- **`ycbcr` is BT.601 studio swing**, not full range: black is Y=16, white is
+  Y=235. Rescale with `(Y - 16) * 255 / 219` if you need 0-255.
+- **`jch` is not CIECAM02.** It is a cheap stand-in with no chromatic
+  adaptation, surround or background term. It tracks real CIECAM02 at r≈0.98
+  on J and r≈0.89 on C, but hue can be off by 70°, and its H spans 0-324°.
+  For CIECAM02 proper, use `colour.XYZ_to_CIECAM02`.
+
+Note also that the forward functions take uint8 0-255 while the inverse
+functions return float32 0-1, so they do not compose directly:
+
+```python
+L, a, b = rgb_to_lab(R, G, B)      # uint8 in
+R2, G2, B2 = lab_to_rgb(L, a, b)   # float [0,1] out
+R2 = (R2 * 255).round().astype(np.uint8)
+```
+

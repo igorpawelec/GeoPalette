@@ -6,9 +6,7 @@ Convenience helpers for reading / writing raster bands via rasterio.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 
@@ -17,7 +15,7 @@ try:
 except ImportError:
     rasterio = None  # type: ignore[assignment]
 
-from .conversions import convertbands, available_spaces
+from .conversions import convertbands
 
 
 def _check_rasterio():

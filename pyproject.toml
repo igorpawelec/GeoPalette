@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "geopalette"
-version = "0.2.0"
+version = "0.3.0"
 description = "Color space conversions for geospatial raster data."
 readme = "README.md"
-license = {text = "GPL-3.0-or-later"}
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [
     {name = "Igor Pawelec"}
@@ -19,7 +20,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -37,6 +37,8 @@ dependencies = [
 io = ["rasterio>=1.3"]
 all = ["rasterio>=1.3", "matplotlib"]
 dev = ["pytest", "rasterio>=1.3", "matplotlib"]
+# reference implementations, for tests/test_reference.py
+validate = ["colour-science>=0.4", "scikit-image>=0.19"]
 
 [project.scripts]
 geopalette = "geopalette.__main__:main"
@@ -47,4 +49,8 @@ Repository = "https://github.com/igorpawelec/geopalette"
 Issues = "https://github.com/igorpawelec/geopalette/issues"
 
 [tool.setuptools.packages.find]
+# Explicit, so setuptools never guesses from the flat layout: www/,
+# test_data/, tests/ and examples/ stay out of the wheel, while any future
+# subpackage is still picked up.
 include = ["geopalette*"]
+exclude = ["tests*", "examples*"]

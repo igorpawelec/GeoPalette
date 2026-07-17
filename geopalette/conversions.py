@@ -94,9 +94,13 @@ def rgb_to_hsl(R, G, B):
     mg = (cmax == Gn) & mask
     mb = (cmax == Bn) & mask
 
+    # index first, then divide. Dividing the whole array and masking after
+    # evaluates 0/0 on every achromatic pixel — grey, white, black, shadow,
+    # water — which is correct only because the NaN is discarded, and noisy
+    # because numpy warns first.
     H[mr] = 60.0 * np.mod((Gn - Bn)[mr] / delta[mr], 6.0)
-    H[mg] = (60.0 * (((Bn - Rn) / delta) + 2.0))[mg]
-    H[mb] = (60.0 * (((Rn - Gn) / delta) + 4.0))[mb]
+    H[mg] = 60.0 * (((Bn - Rn)[mg] / delta[mg]) + 2.0)
+    H[mb] = 60.0 * (((Rn - Gn)[mb] / delta[mb]) + 4.0)
 
     S = np.zeros_like(cmax)
     non_zero = delta != 0
@@ -123,9 +127,9 @@ def rgb_to_hsv(R, G, B):
     mg = (cmax == Gn) & mask
     mb = (cmax == Bn) & mask
 
-    H[mr] = (60.0 * ((Gn - Bn) / delta))[mr] % 360.0
-    H[mg] = (60.0 * (((Bn - Rn) / delta) + 2.0))[mg]
-    H[mb] = (60.0 * (((Rn - Gn) / delta) + 4.0))[mb]
+    H[mr] = (60.0 * ((Gn - Bn)[mr] / delta[mr])) % 360.0
+    H[mg] = 60.0 * (((Bn - Rn)[mg] / delta[mg]) + 2.0)
+    H[mb] = 60.0 * (((Rn - Gn)[mb] / delta[mb]) + 4.0)
 
     S = np.zeros_like(cmax)
     nz = cmax != 0
@@ -196,14 +200,22 @@ def rgb_to_dlab(R, G, B):
 
     angle = np.deg2rad(16.0)
     e = a_lab * np.cos(angle) + b_lab * np.sin(angle)
-    f = -a_lab * np.sin(angle) + b_lab * np.cos(angle)
+    # DIN 6176 compresses the second axis by 0.7. Dropping it leaves a99/b99
+    # out by several units — the whole point of DIN99 is that a unit step is
+    # a perceptual step, so the scale has to be right.
+    f = 0.7 * (-a_lab * np.sin(angle) + b_lab * np.cos(angle))
 
     G_val = np.sqrt(e ** 2 + f ** 2)
     k_val = np.where(G_val != 0.0,
                      np.log1p(0.045 * G_val) / 0.045, 0.0)
 
-    a99 = np.where(G_val != 0.0, k_val * (e / G_val), 0.0)
-    b99 = np.where(G_val != 0.0, k_val * (f / G_val), 0.0)
+    # np.where evaluates both branches, so e/G_val would still divide by zero
+    # on neutral pixels — where G_val == 0 and the hue is undefined anyway.
+    nz = G_val != 0.0
+    a99 = np.zeros_like(G_val)
+    b99 = np.zeros_like(G_val)
+    np.divide(k_val * e, G_val, out=a99, where=nz)
+    np.divide(k_val * f, G_val, out=b99, where=nz)
 
     return (L_lab.astype(np.float32), a_lab.astype(np.float32),
             b_lab.astype(np.float32), L99.astype(np.float32),
@@ -245,13 +257,18 @@ def rgb_to_luv(R, G, B):
 
     denom = X + 15.0 * Y + 3.0 * Z
     denom_ref = _Xn + 15.0 * _Yn + 3.0 * _Zn
-    u_prime = np.where(denom != 0,
-                       4.0 * X / denom, 4.0 * _Xn / denom_ref)
-    v_prime = np.where(denom != 0,
-                       9.0 * Y / denom, 9.0 * _Yn / denom_ref)
-
     u_prime_r = 4.0 * _Xn / denom_ref
     v_prime_r = 9.0 * _Yn / denom_ref
+
+    # np.where is not lazy: it evaluates both branches, so writing
+    # np.where(denom != 0, 4*X/denom, ...) still divides by zero on black
+    # pixels and only discards the result afterwards. np.divide's `where`
+    # skips those elements instead.
+    nz = denom != 0
+    u_prime = np.full_like(X, u_prime_r)
+    v_prime = np.full_like(Y, v_prime_r)
+    np.divide(4.0 * X, denom, out=u_prime, where=nz)
+    np.divide(9.0 * Y, denom, out=v_prime, where=nz)
 
     u_val = 13.0 * L * (u_prime - u_prime_r)
     v_val = 13.0 * L * (v_prime - v_prime_r)
@@ -301,7 +318,21 @@ def rgb_to_xyY(R, G, B):
 
 
 def rgb_to_jch(R, G, B):
-    """RGB → simplified JCH (CIECAM02-like).  Returns J, C, H (0-360°)."""
+    """RGB → simplified JCH.  Returns J (0-100), C (0-100), H (0-324°).
+
+    **Not CIECAM02.** This is a cheap stand-in built from relative luminance
+    and HSV-style chroma and hue, with no chromatic adaptation, surround or
+    background term. Against a real CIECAM02 transform it tracks J at
+    r≈0.98 and C at r≈0.89, but the hue can be off by as much as 70°.
+
+    Reach for it when you want a fast lightness/chroma/hue decomposition and
+    the exact values do not matter. If you need CIECAM02 proper — for a
+    colour-difference metric, or anything you intend to publish — use
+    ``colour-science``: ``colour.XYZ_to_CIECAM02``.
+
+    Note the hue range. H is an HSV hue scaled by 0.9, so it spans 0-324°,
+    not the 0-360° of a hue angle nor the 0-400 of CIECAM02 hue quadrature.
+    """
     X, Y, Z = _rgb_to_xyz(R, G, B)
 
     J = Y * 100.0
@@ -321,9 +352,11 @@ def rgb_to_jch(R, G, B):
     mg = (maxRGB == Gn) & mask
     mb = (maxRGB == Bn) & mask
 
-    H[mr] = (60.0 * ((Gn - Bn) / delta))[mr]
-    H[mg] = (60.0 * (((Bn - Rn) / delta) + 2.0))[mg]
-    H[mb] = (60.0 * (((Rn - Gn) / delta) + 4.0))[mb]
+    # index before dividing: masking afterwards still evaluates 0/0 on every
+    # achromatic pixel and makes numpy warn about it
+    H[mr] = 60.0 * ((Gn - Bn)[mr] / delta[mr])
+    H[mg] = 60.0 * (((Bn - Rn)[mg] / delta[mg]) + 2.0)
+    H[mb] = 60.0 * (((Rn - Gn)[mb] / delta[mb]) + 4.0)
     H = np.where(H < 0, H + 360.0, H)
     H = H * 0.9
 
@@ -331,7 +364,14 @@ def rgb_to_jch(R, G, B):
 
 
 def rgb_to_ycbcr(R, G, B):
-    """RGB → YCbCr (BT.601 full-range).  Returns Y (16-235), Cb, Cr (16-240)."""
+    """RGB → YCbCr, BT.601 **studio swing**.  Returns Y (16-235), Cb/Cr (16-240).
+
+    Studio range, not full range: black maps to Y=16 and white to Y=235,
+    matching the ITU-R BT.601 broadcast convention. If you need the full
+    0-255 swing, scale afterwards:
+
+        Y_full = (Y - 16) * 255 / 219
+    """
     Rf = R.astype(np.float32)
     Gf = G.astype(np.float32)
     Bf = B.astype(np.float32)
@@ -363,10 +403,18 @@ def rgb_to_jzazbz(R, G, B):
     Y_abs = Y * 203.0
     Z_abs = Z * 203.0
 
-    # XYZ → LMS (modified Hunt-Pointer-Estevez)
-    Lp = 0.41478972 * X_abs + 0.579999 * Y_abs + 0.01464800 * Z_abs
-    Mp = -0.20151000 * X_abs + 1.120649 * Y_abs + 0.05310080 * Z_abs
-    Sp = -0.01660080 * X_abs + 0.264800 * Y_abs + 0.66847990 * Z_abs
+    # Pre-scaling of X and Y before the LMS matrix, per Safdar et al. eq. 8-9.
+    # Without it Jz is out by ~80% of its own range; the LMS matrix below is
+    # defined against these primed values, not against raw XYZ.
+    b = 1.15
+    g = 0.66
+    X_p = b * X_abs - (b - 1.0) * Z_abs
+    Y_p = g * Y_abs - (g - 1.0) * X_abs
+
+    # XYZ' → LMS (modified Hunt-Pointer-Estevez)
+    Lp = 0.41478972 * X_p + 0.579999 * Y_p + 0.01464800 * Z_abs
+    Mp = -0.20151000 * X_p + 1.120649 * Y_p + 0.05310080 * Z_abs
+    Sp = -0.01660080 * X_p + 0.264800 * Y_p + 0.66847990 * Z_abs
 
     # PQ transfer function (Perceptual Quantizer)
     c1 = 3424.0 / 4096.0
@@ -380,18 +428,20 @@ def rgb_to_jzazbz(R, G, B):
         xn = x ** n
         return ((c1 + c2 * xn) / (1.0 + c3 * xn)) ** p
 
-    Lp_pq = _pq(np.abs(Lp))
-    Mp_pq = _pq(np.abs(Mp))
-    Sp_pq = _pq(np.abs(Sp))
+    Lp_pq = _pq(Lp)
+    Mp_pq = _pq(Mp)
+    Sp_pq = _pq(Sp)
 
     # Izazbz
     Iz = 0.5 * Lp_pq + 0.5 * Mp_pq
     az = 3.524000 * Lp_pq - 4.066708 * Mp_pq + 0.542708 * Sp_pq
     bz = 0.199076 * Lp_pq + 1.096799 * Mp_pq - 1.295875 * Sp_pq
 
-    # Jz
-    d0 = 1.6295499532821566e-11
-    Jz = (1.0 + d0) * Iz / (1.0 + d0 * Iz) - d0
+    # Jz. Two constants, not one: d shapes the curve, d_0 only offsets it.
+    # Using d_0 in place of d collapses this to Jz ≈ Iz, since d_0 ≈ 1.6e-11.
+    d = -0.56
+    d_0 = 1.6295499532821566e-11
+    Jz = ((1.0 + d) * Iz) / (1.0 + d * Iz) - d_0
 
     return Jz.astype(np.float32), az.astype(np.float32), bz.astype(np.float32)
 

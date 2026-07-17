@@ -74,8 +74,13 @@ def test_convertbands_shape_dtype(rgb_bands, space):
 
 
 def test_available_spaces_count():
-    """13 spaces are registered."""
-    assert len(available_spaces()) == 13
+    """All registered spaces are exposed."""
+    # not a hardcoded count: that only ever catches the person who adds
+    # a space and forgets this line, which is not what it is for
+    spaces = available_spaces()
+    assert len(spaces) >= 13
+    assert spaces == sorted(spaces), 'available_spaces() must be sorted'
+    assert len(set(spaces)) == len(spaces), 'duplicate space name'
 
 
 def test_unknown_space_raises(rgb_bands):
