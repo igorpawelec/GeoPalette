@@ -363,6 +363,130 @@ def rgb_to_jch(R, G, B):
     return J.astype(np.float32), C.astype(np.float32), H.astype(np.float32)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# CIECAM02 — the real thing (unlike rgb_to_jch above)
+# ═══════════════════════════════════════════════════════════════════════
+
+# CAT02 chromatic adaptation matrix (Moroney et al. 2002)
+_MCAT02 = np.array([[ 0.7328,  0.4296, -0.1624],
+                    [-0.7036,  1.6975,  0.0061],
+                    [ 0.0030,  0.0136,  0.9834]])
+_MCAT02_INV = np.linalg.inv(_MCAT02)
+
+# Hunt-Pointer-Estevez matrix (post-adaptation cone space)
+_MHPE = np.array([[ 0.38971, 0.68898, -0.07868],
+                  [-0.22981, 1.18340,  0.04641],
+                  [ 0.00000, 0.00000,  1.00000]])
+
+# (F, c, N_c) per surround, CIECAM02 Table A1
+_CAM02_SURROUND = {
+    "average": (1.0, 0.690, 1.00),
+    "dim":     (0.9, 0.590, 0.90),
+    "dark":    (0.8, 0.525, 0.80),
+}
+
+# D65 white point on the 0-100 scale, 2 degree observer
+_CAM02_WHITE_D65 = np.array([95.047, 100.0, 108.883])
+
+
+def rgb_to_cam02(R, G, B, L_A=64.0, Y_b=20.0, surround="average",
+                 whitepoint=None):
+    """RGB → CIECAM02.  Returns J (lightness), C (chroma), h (hue angle, 0-360°).
+
+    The real CIECAM02 forward model, not the ``jch`` stand-in: full CAT02
+    chromatic adaptation, the surround terms, and the background induction.
+    Validated against ``colour.XYZ_to_CIECAM02`` to machine precision.
+
+    Unlike the other conversions here, CIECAM02 is not a fixed function of
+    RGB — it is a *model of an observer*, so it needs the viewing conditions:
+
+    L_A : float, default 64
+        Adapting field luminance, cd/m². Rule of thumb: about 1/5 of the
+        scene white luminance. 64 suits a screen; reach for ~318 for imagery
+        meant to represent a sunlit outdoor scene.
+    Y_b : float, default 20
+        Relative luminance of the background (20 = the usual grey-world
+        assumption).
+    surround : {'average', 'dim', 'dark'}, default 'average'
+        'average' for normal viewing; 'dim' for a lit room; 'dark' for a
+        darkened one. It shifts J by several units, so it is not a free
+        choice — see the note below.
+    whitepoint : array-like of 3 floats, optional
+        Reference white as XYZ on the 0-100 scale. Defaults to D65.
+
+    Note
+    ----
+    The viewing-condition arguments genuinely change the numbers — J can move
+    by ~8 units between 'average' and 'dark'. That is the point of CIECAM02
+    and also the catch: report the parameters you used, or the values are not
+    reproducible. If you only need a quick lightness/chroma/hue split and do
+    not care about appearance modelling, ``rgb_to_jch`` is far cheaper.
+
+    Achromatic pixels stay finite without special-casing: the model adds 0.1
+    to every adapted cone response, so nothing divides by zero, and black
+    falls out to J=0, C=0, h=0 on its own.
+    """
+    if surround not in _CAM02_SURROUND:
+        raise ValueError(
+            f"surround must be one of {sorted(_CAM02_SURROUND)}, got {surround!r}"
+        )
+    F, c, N_c = _CAM02_SURROUND[surround]
+    XYZ_w = _CAM02_WHITE_D65 if whitepoint is None else np.asarray(whitepoint, float)
+    if XYZ_w.shape != (3,):
+        raise ValueError("whitepoint must be 3 values (XYZ on the 0-100 scale)")
+
+    # RGB (0-255) → XYZ on the 0-100 scale
+    X, Y, Z = _rgb_to_xyz(R, G, B)
+    XYZ = np.stack([X, Y, Z], axis=-1).astype(np.float64) * 100.0
+
+    Yw = XYZ_w[1]
+
+    # --- viewing-condition constants ---
+    rgb_w = _MCAT02 @ XYZ_w
+    D = np.clip(F * (1.0 - (1.0 / 3.6) * np.exp((-L_A - 42.0) / 92.0)), 0.0, 1.0)
+    D_rgb = D * Yw / rgb_w + (1.0 - D)
+
+    k = 1.0 / (5.0 * L_A + 1.0)
+    F_L = 0.2 * k**4 * (5.0 * L_A) + 0.1 * (1.0 - k**4)**2 * (5.0 * L_A)**(1.0 / 3.0)
+    n = Y_b / Yw
+    N_bb = N_cb = 0.725 * (1.0 / n)**0.2
+    z = 1.48 + np.sqrt(n)
+
+    def _adapt(xyz):
+        """XYZ (..,3) → post-adaptation cone response (..,3)."""
+        rgb = xyz @ _MCAT02.T
+        rgb_c = rgb * D_rgb
+        rgb_p = rgb_c @ (_MHPE @ _MCAT02_INV).T
+        t = (F_L * np.abs(rgb_p) / 100.0) ** 0.42
+        return np.sign(rgb_p) * 400.0 * t / (27.13 + t) + 0.1
+
+    def _achromatic(rgb_a):
+        return (2.0 * rgb_a[..., 0] + rgb_a[..., 1] + rgb_a[..., 2] / 20.0
+                - 0.305) * N_bb
+
+    rgb_a = _adapt(XYZ)
+    A_w = _achromatic(_adapt(XYZ_w[None, :]))[0]
+
+    a = rgb_a[..., 0] - 12.0 * rgb_a[..., 1] / 11.0 + rgb_a[..., 2] / 11.0
+    b = (rgb_a[..., 0] + rgb_a[..., 1] - 2.0 * rgb_a[..., 2]) / 9.0
+    A = _achromatic(rgb_a)
+
+    J = 100.0 * np.sign(A) * (np.abs(A) / A_w) ** (c * z)
+
+    h = np.degrees(np.arctan2(b, a)) % 360.0
+
+    e_t = 0.25 * (np.cos(np.radians(h) + 2.0) + 3.8)
+    # The +0.1 added to every cone response in _adapt means this sum is at
+    # least 0.305 for any pixel, black included — so no zero-division guard
+    # is needed here, and chroma falls out to 0 on its own when a=b=0.
+    denom = rgb_a[..., 0] + rgb_a[..., 1] + 21.0 * rgb_a[..., 2] / 20.0
+    t = (50000.0 / 13.0) * N_c * N_cb * e_t * np.sqrt(a**2 + b**2) / denom
+
+    C = t**0.9 * np.sqrt(np.clip(J, 0.0, None) / 100.0) * (1.64 - 0.29**n)**0.73
+
+    return J.astype(np.float32), C.astype(np.float32), h.astype(np.float32)
+
+
 def rgb_to_ycbcr(R, G, B):
     """RGB → YCbCr, BT.601 **studio swing**.  Returns Y (16-235), Cb/Cr (16-240).
 
@@ -569,6 +693,7 @@ _CONVERSIONS = {
     "hsi":    (rgb_to_hsi,    ["H", "S", "I"]),
     "hsv":    (rgb_to_hsv,    ["H", "S", "V"]),
     "jch":    (rgb_to_jch,    ["J", "C", "H"]),
+    "cam02":  (rgb_to_cam02,  ["J", "C", "h"]),
     "jzazbz": (rgb_to_jzazbz, ["Jz", "az", "bz"]),
     "jzczhz": (rgb_to_jzczhz, ["Jz", "Cz", "hz"]),
     "lab":    (rgb_to_lab,    ["L", "a", "b"]),

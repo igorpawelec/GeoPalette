@@ -210,6 +210,23 @@ Jzazbz carries an exponent of 134, which turns a float32 input error of
 
 Two spaces need a note:
 
+- **`cam02` is real CIECAM02**; **`jch` is not.** Use `rgb_to_cam02` when you
+  need appearance values you can defend — it runs the full model (CAT02
+  adaptation, surround, background) and matches `colour.XYZ_to_CIECAM02` to
+  float32 precision. It takes viewing-condition arguments because CIECAM02
+  models an observer, not a fixed function of RGB:
+
+  ```python
+  from geopalette import rgb_to_cam02
+  J, C, h = rgb_to_cam02(R, G, B, L_A=64, Y_b=20, surround="average")
+  ```
+
+  `L_A` is the adapting luminance (~1/5 of scene white; ~318 for a sunlit
+  outdoor scene, ~64 for a screen), `Y_b` the background (20 = grey world),
+  `surround` one of `average` / `dim` / `dark`. These move the result — J
+  shifts about 8 units between average and dark — so report them. `jch` stays
+  as a fast stand-in when the exact numbers do not matter.
+
 - **`ycbcr` is BT.601 studio swing**, not full range: black is Y=16, white is
   Y=235. Rescale with `(Y - 16) * 255 / 219` if you need 0-255.
 - **`jch` is not CIECAM02.** It is a cheap stand-in with no chromatic

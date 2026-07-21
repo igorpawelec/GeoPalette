@@ -2,7 +2,7 @@
 geopalette — Color space conversions for geospatial raster data.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "Igor Pawelec"
 
 from .conversions import (
@@ -17,6 +17,7 @@ from .conversions import (
     rgb_to_lchuv,
     rgb_to_xyY,
     rgb_to_jch,
+    rgb_to_cam02,
     rgb_to_ycbcr,
     rgb_to_jzazbz,
     rgb_to_jzczhz,
@@ -44,6 +45,7 @@ __all__ = [
     "rgb_to_lchuv",
     "rgb_to_xyY",
     "rgb_to_jch",
+    "rgb_to_cam02",
     "rgb_to_ycbcr",
     "rgb_to_jzazbz",
     "rgb_to_jzczhz",

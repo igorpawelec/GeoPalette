@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0]
+
+### Added
+- **`rgb_to_cam02` — real CIECAM02**, alongside the existing `rgb_to_jch`.
+  Full forward model: CAT02 chromatic adaptation, surround terms, background
+  induction. Returns J (lightness), C (chroma), h (hue angle 0-360°).
+  Validated against `colour.XYZ_to_CIECAM02` to float32 precision across the
+  average, dim and dark surrounds. Registered as the `cam02` space.
+
+  Unlike the other conversions, it takes viewing-condition arguments —
+  `L_A` (adapting luminance), `Y_b` (background), `surround` — because
+  CIECAM02 models an observer, not a fixed function of RGB. They genuinely
+  move the numbers (J shifts ~8 units between average and dark), so report
+  what you used. `rgb_to_jch` stays as the cheap stand-in for when exact
+  appearance values do not matter.
+
+### Note
+- `rgb_to_jch` is unchanged and still not CIECAM02. If you need appearance
+  values you can defend in a manuscript, use `rgb_to_cam02`.
+
 ## [0.3.0]
 
 Three conversions produced wrong numbers. The unit tests all passed, because

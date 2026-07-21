@@ -193,3 +193,74 @@ def test_no_runtime_warnings_on_edge_colours(rgb):
     with np.errstate(all="raise"):
         for space in gp.available_spaces():
             gp.convertbands(a, b, c, space)
+
+
+# ── CIECAM02 (rgb_to_cam02) ───────────────────────────────────────────
+
+def _cam_reference(R, G, B, L_A, Y_b, sur):
+    """colour-science CIECAM02 on the SAME XYZ and white the package uses.
+
+    rgb_to_cam02 builds XYZ from geopalette's own sRGB->XYZ matrix, which
+    differs from colour's in the last two decimals. Feeding colour that same
+    XYZ isolates the appearance model from the RGB->XYZ step; otherwise a
+    correct CIECAM02 looks wrong by ~5e-3 for reasons that have nothing to do
+    with it.
+    """
+    from geopalette.conversions import _rgb_to_xyz, _CAM02_WHITE_D65
+    XYZ = np.stack(_rgb_to_xyz(R, G, B), -1) * 100.0
+    return colour.XYZ_to_CIECAM02(
+        XYZ, _CAM02_WHITE_D65, L_A=L_A, Y_b=Y_b,
+        surround=colour.VIEWING_CONDITIONS_CIECAM02[sur.capitalize()])
+
+
+@pytest.mark.parametrize("sur,L_A,Y_b", [("average", 64, 20),
+                                         ("dim", 100, 20),
+                                         ("dark", 318, 25)])
+def test_cam02_matches_colour_science(sample, sur, L_A, Y_b):
+    """Full CIECAM02 forward, every surround. Guards the N_c constants too:
+    N_c feeds chroma directly, so a wrong one shows up here as a C mismatch
+    for that surround only."""
+    R, G, B, _, _ = sample
+    J, C, h = gp.rgb_to_cam02(R, G, B, L_A=L_A, Y_b=Y_b, surround=sur)
+    ref = _cam_reference(R, G, B, L_A, Y_b, sur)
+    _close(J, ref.J, 1e-3)
+    _close(C, np.asarray(ref.C), 1e-3)
+    dh = np.abs(h.astype(np.float64) - np.asarray(ref.h))
+    dh = np.minimum(dh, 360.0 - dh)
+    assert dh.max() < 1e-2, f"hue max diff {dh.max()}"
+
+
+def test_cam02_viewing_conditions_actually_matter(sample):
+    """If the surround argument did nothing, it would be a fake parameter."""
+    R, G, B, _, _ = sample
+    J_avg = gp.rgb_to_cam02(R, G, B, surround="average")[0]
+    J_dark = gp.rgb_to_cam02(R, G, B, surround="dark")[0]
+    assert np.abs(J_avg.astype(float) - J_dark.astype(float)).max() > 1.0
+
+
+@pytest.mark.parametrize("rgb", [(0, 0, 0), (255, 255, 255), (128, 128, 128),
+                                 (1, 1, 1)])
+def test_cam02_achromatic_is_finite_and_matches(rgb):
+    """Black/grey/white push CIECAM02 to divide by a sum of cone responses
+    that approaches zero. Output must stay finite (not NaN), and must still
+    match the reference — black lands on J=0/C=0, grey and white on a small
+    non-zero chroma because D65 is not exactly on the sRGB grey axis."""
+    a = np.full((4, 4), rgb[0], dtype=np.uint8)
+    b = np.full((4, 4), rgb[1], dtype=np.uint8)
+    c = np.full((4, 4), rgb[2], dtype=np.uint8)
+    with np.errstate(all="raise"):
+        J, C, h = gp.rgb_to_cam02(a, b, c)
+    for arr in (J, C, h):
+        assert np.isfinite(arr).all()
+    ref = _cam_reference(a, b, c, 64.0, 20.0, "average")
+    _close(J, ref.J, 1e-3)
+    _close(C, np.asarray(ref.C), 1e-3)
+
+
+def test_cam02_rejects_bad_arguments(sample):
+    R, G, B, _, _ = sample
+    for bad in ("Average", "bright", ""):
+        with pytest.raises(ValueError):
+            gp.rgb_to_cam02(R, G, B, surround=bad)
+    with pytest.raises(ValueError):
+        gp.rgb_to_cam02(R, G, B, whitepoint=[95.0, 100.0])  # needs 3
